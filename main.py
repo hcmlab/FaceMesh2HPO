@@ -11,7 +11,6 @@ Notes:
 - Designed to be invoked from the command line via Python Fire.
 - Documentation-only changes; no runtime behavior is altered.
 """
-import itertools
 import json
 import os
 import pathlib
@@ -26,13 +25,13 @@ import tqdm
 from lightning import seed_everything
 from loguru import logger
 
-from lib.datasets.base_dataset import BaseFaceMeshDataset
-from lib.datasets.gmdb_dataset import GMDBFaceMeshDataset
-from lib.datasets.gmdb_hpo_dataset import GMDBFaceMeshHPODataset
-from lib.datasets.utkface_dataset import UTKFaceFaceMeshDataset
-from lib.hpo_tree.hpo_model import HumanPhenotypeModel
-from lib.hpo_tree.hpo_term import HumanPhenotypeTerm
-from lib.utils.mediapipe_helper import extract_face_meshes
+from src.datasets.base_dataset import BaseFaceMeshDataset
+from src.datasets.gmdb_dataset import GMDBFaceMeshDataset
+from src.datasets.gmdb_hpo_dataset import GMDBFaceMeshHPODataset
+from src.datasets.utkface_dataset import UTKFaceFaceMeshDataset
+from src.hpo_tree.hpo_model import HumanPhenotypeModel
+from src.hpo_tree.hpo_term import HumanPhenotypeTerm
+from src.utils.mediapipe_helper import extract_face_meshes
 
 
 def train(data_dir: str, out_dir: str, gmdb_root_dir: str, utk_root_dir: str = None,
