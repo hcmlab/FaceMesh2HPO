@@ -11,6 +11,7 @@ Notes:
 - Designed to be invoked from the command line via Python Fire.
 - Documentation-only changes; no runtime behavior is altered.
 """
+import itertools
 import json
 import os
 import pathlib
@@ -25,13 +26,30 @@ import tqdm
 from lightning import seed_everything
 from loguru import logger
 
-from src.datasets.base_dataset import BaseFaceMeshDataset
-from src.datasets.gmdb_dataset import GMDBFaceMeshDataset
-from src.datasets.gmdb_hpo_dataset import GMDBFaceMeshHPODataset
-from src.datasets.utkface_dataset import UTKFaceFaceMeshDataset
-from src.hpo_tree.hpo_model import HumanPhenotypeModel
-from src.hpo_tree.hpo_term import HumanPhenotypeTerm
-from src.utils.mediapipe_helper import extract_face_meshes
+from lib.datasets.base_dataset import BaseFaceMeshDataset
+from lib.datasets.gmdb_dataset import GMDBFaceMeshDataset
+from lib.datasets.gmdb_hpo_dataset import GMDBFaceMeshHPODataset
+from lib.datasets.utkface_dataset import UTKFaceFaceMeshDataset
+from lib.hpo_tree.hpo_model import HumanPhenotypeModel
+from lib.utils.hpo_graph import build_modified_hpo_tree
+from lib.utils.mediapipe_helper import extract_face_meshes
+
+
+def ablation_study(data_dir: str, out_dir: str, gmdb_root_dir: str, utk_root_dir: str = None,
+                   face_region_selections_file: str = None, db_type: Literal[-1, 0, 1, 2, 3, 4] = -1, folds: int = 5,
+                   seed: int = 42, parallel: bool = True):
+    dimensions = [2]
+    use_face_outlines = [False, True]
+    soft_labels = [0, 0.05, 0.1]
+    feature_importance_thresholds = [0.01, 0.05, 0.1]
+    use_meta_data = [[], ['age', 'gender', 'ethnicity']]
+    for config in itertools.product(dimensions, use_face_outlines, soft_labels, feature_importance_thresholds,
+                                    use_meta_data):
+        dimension, use_outline, soft_label, feature_importance_threshold, meta_data = config
+        train(data_dir, out_dir, gmdb_root_dir, utk_root_dir, face_region_selections_file=face_region_selections_file,
+              use_face_outline=use_outline, use_meta_data=meta_data, db_type=db_type, folds=folds,
+              feature_importance_threshold=feature_importance_threshold, dimensions=dimension,
+              soft_labels=soft_label, seed=seed, parallel=parallel)
 
 
 def train(data_dir: str, out_dir: str, gmdb_root_dir: str, utk_root_dir: str = None,
@@ -78,16 +96,10 @@ def train(data_dir: str, out_dir: str, gmdb_root_dir: str, utk_root_dir: str = N
     reference_face_mesh = reference_face_mesh[1].reshape((-1, 3))[:, :dimensions]
 
     # Load and prepare HPO tree
-    hpo = HumanPhenotypeTerm.load_ontology(data_dir, download=False)
-    hp_abnorm_face = hpo.find_successor('HP:0000271')  # Abnormality of the face
-    hp_abnorm_eye = hpo.find_successor('HP:0000478')  # Abnormality of the eye
-    hp_abnorm_eyebrow = hpo.find_successor('HP:0000534')  # Abnormal eyebrow morphology
-    hp_abnorm_face.add_successor(hp_abnorm_eye)  # Move eye to face
-    hp_abnorm_face.add_successor(hp_abnorm_eyebrow)  # Move eyebrow to face
-    hp_abnorm_face.define_as_root()
-    logger.debug(f'Prepared HPO tree and reduced it to the root {hp_abnorm_face.id} with {len(hp_abnorm_face)} nodes.')
+    hpo = build_modified_hpo_tree(data_dir, download=False)
+    logger.debug(f'Prepared HPO tree and reduced it to the root {hpo.id} with {len(hpo)} nodes.')
 
-    root_model = HumanPhenotypeModel.create_from_hpo(hp_abnorm_face, out_dir, dimensions, use_meta_data, parallel,
+    root_model = HumanPhenotypeModel.create_from_hpo(hpo, out_dir, dimensions, use_meta_data, parallel,
                                                      version, max_num_workers, recursive=True)
 
     if face_region_selections_file:
@@ -144,79 +156,81 @@ def recursive_model_training(pbar: tqdm.tqdm, model: HumanPhenotypeModel, db_pre
     pbar.set_description_str(model.id)
     os.makedirs(model.log_path, exist_ok=True)
 
-    if not os.path.exists(model.point_mask_file_output):
-        # Check Pre-Conditions
-        children_count = len(model)
+    # if not os.path.exists(model.point_mask_file_output):
+    # Check Pre-Conditions
+    children_count = len(model)
 
-        # In case a pre-defined point mask exists for this HPO-term
-        if model.id in available_point_masks:
-            point_mask = available_point_masks[model.id]
-            logger.debug(f'{model.id} has a pre-defined point mask.')
+    # In case a pre-defined point mask exists for this HPO-term
+    if model.id in available_point_masks:
+        point_mask = available_point_masks[model.id]
+        logger.debug(f'{model.id} has a pre-defined point mask.')
 
-        if point_mask is not None and point_mask.sum() < 2:
-            logger.warning(f'Skip {model.id} ({model.name}) => {point_mask.sum()} points in the face mask.')
-            update_pbar('NoPoints', 1 + children_count, pbar)
-            return
+    if point_mask is not None and point_mask.sum() < 2:
+        logger.warning(f'Skip {model.id} ({model.name}) => {point_mask.sum()} points in the face mask.')
+        update_pbar('NoPoints', 1 + children_count, pbar)
+        return
 
-        logger.debug(f'Using a point mask with {point_mask.sum()} points.')
+    logger.debug(f'Using a point mask with {point_mask.sum()} points.')
 
-        # Prepare Database
-        logger.debug(f'Prepare dataset for node {model.id}...')
-        dist_columns = ['gender', 'age', 'ethnicity']
-        db_present.label_column = model.id
-        # Prepare positive samples where HPO is present
-        db_present_samples = db_present.sample_from_label_column(-1, 1, seed)
-        present_sample_count = len(db_present_samples)
-        if present_sample_count < folds:
-            logger.warning(f'Skip {model.id} ({model.name}) => present samples: {present_sample_count}')
-            update_pbar('NoSamples', 1 + children_count, pbar)
-            shutil.rmtree(model.log_path)
-            return
-        if present_sample_count < min_samples_required // 2:
-            logger.warning(f'Skip {model.id} ({model.name}) => present sample count {present_sample_count} too few')
-            update_pbar('NoSamples', 1 + children_count, pbar)
-            shutil.rmtree(model.log_path)
-            return
-        syndrome_counts = db_present_samples.data_df['internal_syndrome_name'].value_counts(dropna=False)
-        syndrome_counts.index = syndrome_counts.index.where(syndrome_counts.index.notna(), other='Missing')
-        syndrome_counts.to_csv(model.dist_syndrome_file)
-        dict_distributions = db_present_samples.extract_distributions(columns=dist_columns)
-        df_distributions_present = pd.concat(
-            [pd.DataFrame(series) for series in dict_distributions.values()]).transpose()
-        df_distributions_present['GMDB'] = present_sample_count
-        df_distributions_present['UTK'] = 0
-        df_distributions_present.to_csv(model.dist_hpo_present_file, index=False)
-        # Prepare negative samples where HPO is absent
-        db_absent_samples = db_present.sample_from_label_column(-1, 0, seed)
-        half_of_present_samples_count = present_sample_count // 2  # Use 0-50% of GMDB negative samples if available
-        if len(db_absent_samples) > half_of_present_samples_count:
-            db_absent_samples = db_absent_samples.sample(half_of_present_samples_count, random_state=seed)
-        negative_gmdb_sample_count = len(db_absent_samples)
-        negative_utk_sample_count = present_sample_count - negative_gmdb_sample_count
-        db_absent_samples = db_absent_samples.concat(
-            db_absent.sample_by_distribution(present_sample_count - len(db_absent_samples), seed, dict_distributions))
-        logger.debug(f'Using {negative_utk_sample_count} UTK samples and {negative_gmdb_sample_count} GMDB samples.')
-        absent_sample_count = len(db_absent_samples)
-        if absent_sample_count < folds:
-            logger.warning(f'Skip {model.id} ({model.name}) => absent samples: {absent_sample_count}')
-            update_pbar('NoSamples', 1 + children_count, pbar)
-            shutil.rmtree(model.log_path)
-            return
-        # db_absent_samples = db_absent_samples.sample_by_distribution(len(db_present_samples), seed, dict_distributions)
-        dict_distributions_absent = db_absent_samples.extract_distributions(columns=dist_columns)
-        df_distributions_healthy = pd.concat(
-            [pd.DataFrame(series) for series in dict_distributions_absent.values()]).transpose()
-        df_distributions_healthy['GMDB'] = negative_gmdb_sample_count
-        df_distributions_healthy['UTK'] = negative_utk_sample_count
-        df_distributions_healthy.to_csv(model.dist_hpo_absent_file, index=False)
-        # Combine positive + negative sampled datasets
-        balanced_dataset = db_present_samples.concat(db_absent_samples, soft_labels)
-        balanced_dataset.set_point_mask(point_mask)
+    # Prepare Database
+    logger.debug(f'Prepare dataset for node {model.id}...')
+    dist_columns = ['gender', 'age', 'ethnicity']
+    db_present.label_column = model.id
+    # Prepare positive samples where HPO is present
+    db_present_samples = db_present.sample_from_label_column(-1, 1, seed)
+    present_sample_count = len(db_present_samples)
+    if present_sample_count < folds:
+        logger.warning(f'Skip {model.id} ({model.name}) => present samples: {present_sample_count}')
+        update_pbar('NoSamples', 1 + children_count, pbar)
+        shutil.rmtree(model.log_path)
+        return
+    if present_sample_count < min_samples_required // 2:
+        logger.warning(f'Skip {model.id} ({model.name}) => present sample count {present_sample_count} too few')
+        update_pbar('NoSamples', 1 + children_count, pbar)
+        shutil.rmtree(model.log_path)
+        return
+    syndrome_counts = db_present_samples.data_df['internal_syndrome_name'].value_counts(dropna=False)
+    syndrome_counts.index = syndrome_counts.index.where(syndrome_counts.index.notna(), other='Missing')
+    syndrome_counts.to_csv(model.dist_syndrome_file)
+    dict_distributions = db_present_samples.extract_distributions(columns=dist_columns)
+    df_distributions_present = pd.concat(
+        [pd.DataFrame(series) for series in dict_distributions.values()]).transpose()
+    df_distributions_present['GMDB'] = present_sample_count
+    df_distributions_present['UTK'] = 0
+    df_distributions_present.to_csv(model.dist_hpo_present_file, index=False)
+    logger.debug(
+        f'Using {len(db_present_samples.data_df['patient_id'].unique().tolist())} unique patients within {len(db_present_samples.data_df['image_id'].unique().tolist())} images.')
+    # Prepare negative samples where HPO is absent
+    db_absent_samples = db_present.sample_from_label_column(-1, 0, seed)
+    half_of_present_samples_count = present_sample_count // 2  # Use 0-50% of GMDB negative samples if available
+    if len(db_absent_samples) > half_of_present_samples_count:
+        db_absent_samples = db_absent_samples.sample(half_of_present_samples_count, random_state=seed)
+    negative_gmdb_sample_count = len(db_absent_samples)
+    negative_utk_sample_count = present_sample_count - negative_gmdb_sample_count
+    db_absent_samples = db_absent_samples.concat(
+        db_absent.sample_by_distribution(present_sample_count - len(db_absent_samples), seed, dict_distributions))
+    logger.debug(f'Using {negative_utk_sample_count} UTK samples and {negative_gmdb_sample_count} GMDB samples.')
+    absent_sample_count = len(db_absent_samples)
+    if absent_sample_count < folds:
+        logger.warning(f'Skip {model.id} ({model.name}) => absent samples: {absent_sample_count}')
+        update_pbar('NoSamples', 1 + children_count, pbar)
+        shutil.rmtree(model.log_path)
+        return
+    # db_absent_samples = db_absent_samples.sample_by_distribution(len(db_present_samples), seed, dict_distributions)
+    dict_distributions_absent = db_absent_samples.extract_distributions(columns=dist_columns)
+    df_distributions_healthy = pd.concat(
+        [pd.DataFrame(series) for series in dict_distributions_absent.values()]).transpose()
+    df_distributions_healthy['GMDB'] = negative_gmdb_sample_count
+    df_distributions_healthy['UTK'] = negative_utk_sample_count
+    df_distributions_healthy.to_csv(model.dist_hpo_absent_file, index=False)
+    # Combine positive + negative sampled datasets
+    balanced_dataset = db_present_samples.concat(db_absent_samples, soft_labels)
+    balanced_dataset.set_point_mask(point_mask)
 
-        # Train HPO Model
-        point_mask = model.train(balanced_dataset, folds, feature_importance_threshold, seed, point_mask)
-    else:
-        point_mask = np.load(model.point_mask_file_output)
+    # Train HPO Model
+    point_mask = model.train(balanced_dataset, folds, feature_importance_threshold, seed, point_mask)
+    # else:
+    #     point_mask = np.load(model.point_mask_file_output)
     update_pbar('Trained', 1, pbar)
     for child_model in model.successors:
         # Continue with next HPO Models
@@ -231,5 +245,91 @@ def update_pbar(tag: Literal['Trained', 'NoPoints', 'NoSamples'], value: int, pb
     pbar.update(value)
 
 
+def clean_up_all(out_dir: str):
+    dimensions = [3, 2]
+    use_face_outlines = [False, True]
+    soft_labels = [0, 0.05, 0.1]
+    feature_importance_thresholds = [0.01, 0.05, 0.1]
+    use_meta_data = [[], ['age', 'gender', 'ethnicity']]
+    for config in itertools.product(dimensions, use_face_outlines, soft_labels, feature_importance_thresholds,
+                                    use_meta_data):
+        dimension, use_outline, soft_label, feature_importance_threshold, meta_data = config
+        version = f'db={4}_d={dimension}_f={use_outline}_m=[{"+".join(meta_data)}]_t={feature_importance_threshold:.2f}_l={soft_label:.2f}_s={42}'
+        clean_up(out_dir, version)
+
+
+def clean_up(out_dir: str, version: str):
+    """Delete artifacts for a specific `version` across all labels for a model type.
+
+    Parameters:
+      model_type: Model family whose output subfolders should be removed (currently 'pointnet').
+      version: String Lightning logger version to remove (e.g., 4 removes `version_4`).
+
+    Side-effects:
+      - Recursively deletes directories matching `{out_dir}/{label}/version_{version}`.
+      - Logs progress via tqdm and Loguru.
+
+    Warning:
+      - This operation is destructive. Ensure you selected the correct `version` before executing.
+    """
+    labels = os.listdir(out_dir)
+    version_paths = [os.path.join(out_dir, label, version) for label in labels if
+                     os.path.exists(os.path.join(out_dir, label, version))]
+    if len(version_paths) < 50:  # MAX: 133
+        for path in tqdm.tqdm(version_paths, desc=f'Cleaning up {version}'):
+            if os.path.isdir(path):
+                shutil.rmtree(path)
+
+
+def export_onnx(data_dir: str, out_dir: str, model_dir: str, dimensions: int = 3,
+                use_meta_data: list[str] = ['age', 'gender', 'ethnicity'],
+                use_face_outline: bool = True, feature_importance_threshold: float = 0.01, soft_labels: float = 0.05,
+                seed: int = 42, db_type: int = 4,
+                keep_hpos: list[str] = [410030, 160, 2714, 233, 219, 232, 10803, 347, 278, 303, 307, 430, 9928, 9931,
+                                        463, 455, 437, 12810, 446, 5280, 3196, 2000, 322, 11829, 275, 12368, 325, 4428,
+                                        1999, 280, 4493, 11800, 10669, 293, 294, 290, 341, 348, 2007, 45075, 2223, 2553,
+                                        664, 336, 11231, 12745, 494, 508, 581, 286, 100539, 486, 525, 568, 601, 520,
+                                        1010, 369, 154, 10805, 12471, 179, 431, 3189, 343, 289, 9890, 337, 574, 637,
+                                        582, 316]):
+    """Export a trained model to ONNX format."""
+    hpo = build_modified_hpo_tree(data_dir, download=False)
+
+    keep_hpos = [f'HP:{h:07d}' for h in keep_hpos]
+    print(f'Annotated HPO-terms: {len(keep_hpos)}')
+
+    # Step 2: Find all ancestors of leaves to keep
+    keep_nodes = set(keep_hpos)
+    for leaf_id in keep_hpos:
+        node = hpo.find_successor(leaf_id)
+        while node and node.predecessor:
+            keep_nodes.add(node.predecessor.id)
+            node = node.predecessor
+    print(f'Keep HPO-terms: {len(keep_nodes)}')
+
+    def prune_subtree(node):
+        # Recurse on children first
+        node_to_remove = []
+        for child in node.successors:
+            prune_subtree(child)
+            if child.is_leaf() and child.id not in keep_nodes:  # Non-relevant leaf
+                node_to_remove.append(child)
+
+        # Remove unnecessary children
+        for child in node_to_remove:
+            node.remove_successor(child)
+
+    prune_subtree(hpo)
+
+    reference_face_file = os.path.join(data_dir, 'reference_face.jpg')
+    reference_face_mesh = extract_face_meshes([reference_face_file])
+    reference_face_mesh = reference_face_mesh[1].reshape((-1, 3))[:, :dimensions]
+
+    version = f'db={db_type}_d={dimensions}_f={use_face_outline}_m=[{"+".join(use_meta_data)}]_t={feature_importance_threshold:.2f}_l={soft_labels:.2f}_s={seed}'
+
+    hpo_model = HumanPhenotypeModel.create_from_hpo(hpo.find_root(), out_dir, dimensions, use_meta_data, False, version,
+                                                    8, True)
+    HumanPhenotypeModel.export_results_json(hpo_model.find_root(), reference_face_mesh, output_path=model_dir)
+
+
 if __name__ == '__main__':
-    fire.Fire(train)
+    fire.Fire()

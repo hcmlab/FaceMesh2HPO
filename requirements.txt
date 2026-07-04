@@ -1,16 +1,16 @@
 lightning>=2.5.2
 fire>=0.7.0
 open3d>=0.19.0
-numpy==2.2.6
+numpy
 trimesh>=4.5.3
 shapely==2.0.6
 pillow>=10.4.0
 matplotlib==3.9.2
 pandas>=2.2.3
 --extra-index-url https://download.pytorch.org/whl/cu130
-torch>=2.7.1
+torch==2.10.0
 --extra-index-url https://download.pytorch.org/whl/cu130
-torchvision>=0.22.1
+torchvision==0.25.0
 tensorboard>=2.20.0
 tensorboardx>=2.6.4
 networkx==3.2.1
@@ -25,7 +25,12 @@ imblearn==0.0
 imbalanced-learn==0.12.4
 optuna==4.1.0
 shap==0.46.0
+h2o==3.46.0.6
+TPOT==0.12.2
 plotly==5.24.1
+xgboost==2.1.2
+dash==2.18.2
+dash-bootstrap-components==1.7.1
 scipy==1.14.1
 cleanvision==0.3.6
 loguru==0.7.3
@@ -33,6 +38,7 @@ seaborn==0.13.2
 captum==0.8.0
 pygraphviz==1.14
 git+https://github.com/hcmlab/FaceMeshModelApi.git
+pgmpy==1.0.0
 kaleido==0.2.1
 pyglet==1.5.31
 pandas-stubs==3.0.0.260204
@@ -42,3 +48,9 @@ onnx==1.20.1
 onnxscript==0.6.2
 onnxoptimizer==0.4.2
 onnx_ir==0.2.0
+pyhpo==4.0.0
+pingouin==0.6.1
+#git+https://github.com/GrammaticalFramework/gf-rgl.git
+#git+https://github.com/GrammaticalFramework/gf-core.git
+#git+https://github.com/pgf-tikz/pgf.git
+pgf
