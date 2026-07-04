@@ -18,7 +18,7 @@ from src.datasets.gmdb_dataset import GMDBFaceMeshDataset
 from src.datasets.gmdb_hpo_dataset import GMDBFaceMeshHPODataset
 from src.datasets.utkface_dataset import UTKFaceFaceMeshDataset
 from src.hpo_tree.hpo_model import HumanPhenotypeModel
-from src.utils.hpo_graph import build_modified_hpo_tree
+from src.utils.hpo_utils import build_modified_hpo_tree
 from src.utils.mediapipe_helper import extract_face_meshes
 
 

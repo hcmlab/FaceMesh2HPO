@@ -1,24 +1,14 @@
-import inspect
+import itertools
 import itertools
 import os
 from abc import ABC, abstractmethod
-from typing import Literal, List
+from typing import List
 
 import numpy as np
 import pandas as pd
 import torch
-from imblearn import FunctionSampler
-from imblearn.over_sampling import SMOTE, ADASYN, RandomOverSampler, KMeansSMOTE, BorderlineSMOTE, SMOTEN, SMOTENC, \
-    SVMSMOTE
-from imblearn.under_sampling import ClusterCentroids, RandomUnderSampler, NearMiss, EditedNearestNeighbours, \
-    RepeatedEditedNearestNeighbours, AllKNN, CondensedNearestNeighbour
 from loguru import logger
-from sklearn.base import ClassNamePrefixFeaturesOutMixin
-from sklearn.decomposition import PCA, FactorAnalysis, FastICA, IncrementalPCA, KernelPCA, LatentDirichletAllocation, \
-    MiniBatchDictionaryLearning, MiniBatchNMF, MiniBatchSparsePCA, NMF, SparseCoder, SparsePCA, TruncatedSVD
-from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
-from sklearn.manifold import Isomap, LocallyLinearEmbedding, MDS, SpectralEmbedding, TSNE
-from sklearn.model_selection import train_test_split, StratifiedGroupKFold
+from sklearn.model_selection import StratifiedGroupKFold
 from torch.utils.data import Dataset
 from typing_extensions import Self
 
@@ -366,31 +356,6 @@ class BaseFaceMeshDataset(Dataset, ABC):
             series_dict[col].index = series_dict[col].index.where(series_dict[col].index.notna(), other='Missing')
         return series_dict
 
-    def split_data(self, test_size: float, random_state: int) -> tuple[Self, Self]:
-        """
-        Split the dataset into training and testing sets.
-        Uses stratified splitting based on the label column.
-        :param test_size: Proportion of the dataset to include in the test split.
-        :param random_state: Random seed.
-        :return: Tuple of (train_dataset, test_dataset).
-        """
-        # Initialize an empty column for split
-        if not 'Split' in self.data_df.columns:
-            self.data_df['Split'] = -1
-            train_idx, test_idx = train_test_split(
-                self.data_df[self.data_columns()].index,
-                stratify=self.data_df[self.label_column],
-                test_size=test_size,
-                random_state=random_state
-            )
-            self.data_df.loc[train_idx, 'Split'] = 0
-            self.data_df.loc[test_idx, 'Split'] = 1
-
-        train_data_df = self.data_df[self.data_df['Split'] == 0]
-        val_data_df = self.data_df[self.data_df['Split'] == 1]
-
-        return self._create_new_dataset(train_data_df), self._create_new_dataset(val_data_df)
-
     def kfold_data(self, folds: int, label, group_label, random_state: int) -> List[tuple[Self, Self]]:
         """
         Perform K-fold split such that all samples of a patient (identified by group_label)
@@ -424,103 +389,3 @@ class BaseFaceMeshDataset(Dataset, ABC):
             self._create_new_dataset(self.data_df.loc[train_idx]),
             self._create_new_dataset(self.data_df.loc[val_idx])
         ) for train_idx, val_idx in splits]
-
-    def reduce_dimensions(self, n_components: int, random_state: int, sampler: Literal[
-        "FactoryAnalysis", "FastICA", "IncrementalPCA", "KernelPCA", "LatentDirichletAllocation",
-        "MiniBatchDictionaryLearning", "MiniBatchNMF", "MiniBatchSparsePCA", "NMF", "PCA", "SparseCoder", "SparsePCA",
-        "TruncatedSVD", "Isomap", "LLE", "MDS", "SpectralEmbedding", "TSNE", "LDA"]) -> (
-            ClassNamePrefixFeaturesOutMixin, Self):
-        """
-        Reduce the dimensions of the point data using various sklearn decomposition or manifold learning methods.
-        :param n_components: Number of components/dimensions to reduce to.
-        :param random_state: Random seed.
-        :param sampler: The name of the sklearn method to use.
-        :return: Tuple of (fitted_method, new_dataset_with_reduced_dimensions).
-        """
-        df_data = self.data_df[self.data_columns()]
-        df_label = self.data_df[self.label_column]
-
-        methods = {
-            "FactoryAnalysis": FactorAnalysis,
-            "FastICA": FastICA,
-            "IncrementalPCA": IncrementalPCA,
-            "KernelPCA": KernelPCA,
-            "LatentDirichletAllocation": LatentDirichletAllocation,
-            "MiniBatchDictionaryLearning": MiniBatchDictionaryLearning,
-            "MiniBatchNMF": MiniBatchNMF,
-            "MiniBatchSparsePCA": MiniBatchSparsePCA,
-            "NMF": NMF,
-            "PCA": PCA,
-            "SparseCoder": SparseCoder,
-            "SparsePCA": SparsePCA,
-            "TruncatedSVD": TruncatedSVD,
-            "Isomap": Isomap,
-            "LLE": LocallyLinearEmbedding,
-            "MDS": MDS,
-            "SpectralEmbedding": SpectralEmbedding,
-            "TSNE": TSNE,
-            "LDA": LinearDiscriminantAnalysis,
-        }
-        method_class = methods[sampler]
-        method_params = {
-            'n_components': n_components,
-            'random_state': random_state,
-        }
-        params = inspect.getfullargspec(method_class)[0]
-        method = methods[sampler](**{key: value for key, value in method_params.items() if key in params})
-        reduced_df_data, reduced_df_label = method.fit_transform(df_data, df_label)
-        return method, self._create_new_dataset(pd.concat([reduced_df_data, reduced_df_label], axis=1))
-
-    def undersample(self, random_state: int, sampler: Literal[
-        "ClusterCentroids", "RandomUnderSampler", "FunctionSampler", "NearMiss", "EditedNearestNeighbours",
-        "RepeatedEditedNearestNeighbours", "AllKNN", "CondensedNearestNeighbour"] = "ClusterCentroids") -> Self:
-        """
-        Perform undersampling on the dataset to handle class imbalance.
-        :param random_state: Random seed.
-        :param sampler: The name of the imblearn undersampling method to use.
-        :return: A new dataset instance with resampled data.
-        """
-        df_data = self.data_df[self.data_columns()]
-        df_label = self.data_df[self.label_column]
-
-        methods = {
-            "ClusterCentroids": ClusterCentroids,
-            "RandomUnderSampler": RandomUnderSampler,
-            "FunctionSampler": FunctionSampler,
-            "NearMiss": NearMiss,
-            "EditedNearestNeighbours": EditedNearestNeighbours,
-            "RepeatedEditedNearestNeighbours": RepeatedEditedNearestNeighbours,
-            "AllKNN": AllKNN,
-            "CondensedNearestNeighbour": CondensedNearestNeighbour,
-        }
-        method = methods[sampler](random_state=random_state)
-        resampled_df_data, resampled_df_label = method.fit_resample(df_data, df_label)
-
-        return self._create_new_dataset(pd.concat([resampled_df_data, resampled_df_label], axis=1))
-
-    def oversample(self, random_state: int, sampler: Literal[
-        "SMOTE", "ADASYN", "RandomOverSampler", "KMeansSMOTE", "BorderlineSMOTE", "SMOTEN", "SMOTENC",
-        "SVMSMOTE"] = "SMOTE") -> Self:
-        """
-        Perform oversampling on the dataset to handle class imbalance.
-        :param random_state: Random seed.
-        :param sampler: The name of the imblearn oversampling method to use.
-        :return: A new dataset instance with resampled data.
-        """
-        df_data = self.data_df[self.data_columns()]
-        df_label = self.data_df[self.label_column]
-
-        methods = {
-            "SMOTE": SMOTE,
-            "ADASYN": ADASYN,
-            "RandomOverSampler": RandomOverSampler,
-            "KMeansSMOTE": KMeansSMOTE,
-            "BorderlineSMOTE": BorderlineSMOTE,
-            "SMOTEN": SMOTEN,
-            "SMOTENC": SMOTENC,
-            "SVMSMOTE": SVMSMOTE,
-        }
-        method = methods[sampler](random_state=random_state)
-        resampled_df_data, resampled_df_label = method.fit_resample(df_data, df_label)
-
-        return self._create_new_dataset(pd.concat([resampled_df_data, resampled_df_label], axis=1))

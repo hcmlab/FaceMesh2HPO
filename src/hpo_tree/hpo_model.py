@@ -29,7 +29,7 @@ from src.pl_module import FaceMeshLightningModule
 from src.pointnet import ClassificationPointNet
 from src.utils.calibration_utils import collect_onnx_logits, calibrate_all
 from src.utils.onnx_utils import optimize_and_shrink_onnx, deduplicate_onnx_ir_style, compress_onnx_to_gzip
-from src.utils.masking import compute_mask
+from src.utils.masking_utils import compute_mask
 from src.xai.feature_space_correlation import investigate_feature_importance
 
 
