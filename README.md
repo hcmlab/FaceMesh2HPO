@@ -1,42 +1,68 @@
-# Geometrically based Human Phenotype Classification utilizing Face Meshes with PointNet
+# FaceMesh2HPO
 
-## Paper
+FaceMesh2HPO is a research codebase for hierarchical classification of facial phenotypic descriptors aligned with the Human Phenotype Ontology (HPO) from 3D face meshes derived from 2D facial photographs. The repository accompanies the manuscript *Hierarchical Classification via Cascading Feature Elimination: Application to Human Phenotype Ontology-Aligned Facial Phenotyping (FaceMesh2HPO)*.
 
-* [ ]  Threshold Analysis of how many samples are required for a >=0.99 performance -> Not sure if this makes sense as the number of samples most certainly will differ depending on the category and number of points feed into the model
-* [ ]  Select best of 5-fold models for LIRICAL analysis (OPTIONAL)
-* [X]  "kind of" XAI by visualizing the importance value of the points for each stage
-* [X]  Ablation Study
-* [X]  HPO/GMDB Dataset description
-* [X]  Validate the predictions by experts -> run on external testing set (on 3 annotations)
-  * [X]  Testing on syndromes not included in the training/validation set -> is it still possible to predict their related HPO-terms?
-  * [X]  Matching the predicted HPO-terms with their actual HPO-terms per syndrome and their frequency (Visualization)
-* [X]  Re-run experiment with gmdb data as negative cases or in combination with UTKFaces if not enough gmdb images are available for specific HPO-term
-* [X]  Looking into the preprocessing pipeline of medapipe
-* [ ]  Threshold on the models performance (webapp)
-* [ ]  Threshold on the performance predictions (webapp)
-* [X]  Look at the best and worst performing models
-* [ ]  Run on UTK & GMDB non-training samples to compute prevelance of each HPO-term
-  * [ ]  Issue: limitation of the data for some HPO-terms (e.g., Hypotelorism, Hypertelorism)
-  * [ ]  Use ~ >80% accuracy models to compute prevelance
-* [ ]  Look at the average classification confidence for each hpo-term
+## Overview
 
+The project introduces a phenotype-centered pipeline that predicts facial HPO terms instead of directly predicting syndromes. The approach uses a cascaded model tree, where each node represents one HPO term and passes a reduced point mask to its descendants based on feature importance.
 
-## Ideas for future improvements
+Core characteristics of the method include:
 
-* Experiment with a greater negative sample set (e.g., using full UTKFaces dataset instead of selected samples) and using class weights.
+- 3D face meshes with 478 landmarks extracted from 2D facial images.
+- A hierarchical HPO model tree with one classifier per phenotype term.
+- Cascading feature elimination based on Integrated Gradients.
+- Optional demographic metadata such as age, sex, and ethnicity.
+- PointNet-based models adapted to variable numbers of mesh points.
+- Evaluation with 5-fold stratified cross-validation and external validation.
 
-## Experiments / Ablation Study
+## Installation
 
+```bash
+git clone https://github.com/hcmlab/FaceMesh2HPO.git
+cd FaceMesh2HPO
+python -m venv .venv
+source .venv/bin/activate  # On Windows use: .venv\Scripts\activate
+pip install -r requirements.txt
 ```
-for d in 3 2; do  # Dimensions
-  for o in False True; do  # Face Outline
-    for l in 0 0.05 0.1; do  # Soft Labels
-      for t in 0.01 0.05 0.1; do  # Feature Importance Threshold
-        for m in '[]' '["age","gender","ethnicity"]'; do
-          sbatch slurm_train.sh -d $d -o $o -l $l -t $t -m $m
-        done
-      done
-    done
-  done
-done
+
+## Training
+
+A typical end-to-end workflow may include:
+
+```bash
+python main.py ablation <params>
+python main.py train <params>
+python main.py export_onnx <params>
+```
+
+Training details:
+
+- Up to 25 epochs per model.
+- Learning rate of 0.0001.
+- Learning-rate reduction on plateau with patience 5.
+- Early stopping with patience 5.
+- Training seed 42.
+- Minimum sample size of 50 for an HPO term model.
+- Minimum of 2 input points required for model training.
+
+## Evaluation
+
+The manuscript reports model assessment using:
+
+- AUROC as the primary performance metric.
+- Matthews Correlation Coefficient (MCC) for selecting the best model for inference.
+- F1-score, precision, and recall.
+- Prevalence and detection prevalence.
+- Independent multi-expert external validation across seen and unseen disorders.
+
+## Citation
+
+If you use this codebase in academic work, cite the accompanying manuscript.
+
+```bibtex
+@article{hellmann_facemesh2hpo,
+  title   = {Hierarchical Classification via Cascading Feature Elimination: Application to Human Phenotype Ontology-Aligned Facial Phenotyping (FaceMesh2HPO)},
+  author  = {Hellmann, Fabio and Hustinx, Alexander and Solomon, Benjamin D. and GestaltMatcher Database Consortium and Hsieh, Tzung-Chien and Krawitz, Peter and Andr{\'e}, Elisabeth},
+  note    = {Manuscript in preparation / under submission}
+}
 ```
