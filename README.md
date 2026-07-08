@@ -60,9 +60,14 @@ The manuscript reports model assessment using:
 If you use this codebase in academic work, cite the accompanying manuscript.
 
 ```bibtex
-@article{hellmann_facemesh2hpo,
-  title   = {Hierarchical Classification via Cascading Feature Elimination: Application to Human Phenotype Ontology-Aligned Facial Phenotyping (FaceMesh2HPO)},
-  author  = {Hellmann, Fabio and Hustinx, Alexander and Solomon, Benjamin D. and GestaltMatcher Database Consortium and Hsieh, Tzung-Chien and Krawitz, Peter and Andr{\'e}, Elisabeth},
-  note    = {Manuscript in preparation / under submission}
+@misc{hellmann_facemesh2hpo_2026,
+  doi = {10.48550/ARXIV.2607.05585},
+  url = {https://arxiv.org/abs/2607.05585},
+  author = {Hellmann,  Fabio and Hustinx,  Alexander and Solomon,  Benjamin D. and Consortium,  GestaltMatcher Database and Hsieh,  Tzung-Chien and Krawitz,  Peter and André,  Elisabeth},
+  keywords = {Computer Vision and Pattern Recognition (cs.CV),  Artificial Intelligence (cs.AI),  Machine Learning (cs.LG),  FOS: Computer and information sciences},
+  title = {Hierarchical Classification via Cascading Feature Elimination: Application to Human Phenotype Ontology-Aligned Facial Phenotyping (FaceMesh2HPO)},
+  publisher = {arXiv},
+  year = {2026},
+  copyright = {Creative Commons Attribution 4.0 International}
 }
 ```
