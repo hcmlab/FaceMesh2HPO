@@ -13,13 +13,13 @@ import tqdm
 from lightning import seed_everything
 from loguru import logger
 
-from lib.datasets.base_dataset import BaseFaceMeshDataset
-from lib.datasets.gmdb_dataset import GMDBFaceMeshDataset
-from lib.datasets.gmdb_hpo_dataset import GMDBFaceMeshHPODataset
-from lib.datasets.utkface_dataset import UTKFaceFaceMeshDataset
-from lib.hpo_tree.hpo_model import HumanPhenotypeModel
-from lib.utils.hpo_graph import build_modified_hpo_tree
-from lib.utils.mediapipe_helper import extract_face_meshes
+from src.datasets.base_dataset import BaseFaceMeshDataset
+from src.datasets.gmdb_dataset import GMDBFaceMeshDataset
+from src.datasets.gmdb_hpo_dataset import GMDBFaceMeshHPODataset
+from src.datasets.utkface_dataset import UTKFaceFaceMeshDataset
+from src.hpo_tree.hpo_model import HumanPhenotypeModel
+from src.utils.hpo_utils import build_modified_hpo_tree
+from src.utils.mediapipe_helper import extract_face_meshes
 
 
 def ablation_study(data_dir: str, out_dir: str, gmdb_root_dir: str, utk_root_dir: str = None,
@@ -306,11 +306,15 @@ def export_onnx(data_dir: str, out_dir: str, model_dir: str, dimensions: int = 3
 
     prune_subtree(hpo)
 
+    reference_face_file = os.path.join(data_dir, 'reference_face.jpg')
+    reference_face_mesh = extract_face_meshes([reference_face_file])
+    reference_face_mesh = reference_face_mesh[1].reshape((-1, 3))[:, :dimensions]
+
     version = f'db={db_type}_d={dimensions}_f={use_face_outline}_m=[{"+".join(use_meta_data)}]_t={feature_importance_threshold:.2f}_l={soft_labels:.2f}_s={seed}'
 
     hpo_model = HumanPhenotypeModel.create_from_hpo(hpo.find_root(), out_dir, dimensions, use_meta_data, False, version,
                                                     8, True)
-    HumanPhenotypeModel.export_onnx_files(hpo_model.find_root(), output_path=model_dir)
+    HumanPhenotypeModel.export_onnx_files(hpo_model, reference_mesh=reference_face_mesh, output_path=model_dir)
 
 
 if __name__ == '__main__':
