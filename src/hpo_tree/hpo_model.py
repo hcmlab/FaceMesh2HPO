@@ -23,14 +23,14 @@ from numpy import ndarray
 from sklearn.preprocessing import MinMaxScaler
 from torch.utils.data import DataLoader
 
-from src.datasets.base_dataset import BaseFaceMeshDataset
-from src.hpo_tree.hpo_term import HumanPhenotypeTerm
-from src.pl_module import FaceMeshLightningModule
-from src.pointnet import ClassificationPointNet
-from src.utils.calibration_utils import collect_onnx_logits, calibrate_all
-from src.utils.onnx_utils import optimize_and_shrink_onnx, deduplicate_onnx_ir_style, compress_onnx_to_gzip
-from src.utils.masking_utils import compute_mask
-from src.xai.feature_space_correlation import investigate_feature_importance
+from lib.datasets.base_dataset import BaseFaceMeshDataset
+from lib.hpo_tree.hpo_term import HumanPhenotypeTerm
+from lib.pl_module import FaceMeshLightningModule
+from lib.pointnet import ClassificationPointNet
+from lib.utils.calibration_utils import collect_onnx_logits, calibrate_all
+from lib.utils.compression import optimize_and_shrink_onnx, deduplicate_onnx_ir_style, compress_onnx_to_gzip
+from lib.utils.masking import compute_mask
+from lib.xai.feature_space_correlation import investigate_feature_importance
 
 
 def create_model(point_mask: ndarray, point_dimensions: int, meta_data: List[str]) -> ClassificationPointNet:
@@ -538,7 +538,8 @@ class HumanPhenotypeModel(HumanPhenotypeTerm):
         return result
 
     @staticmethod
-    def find_files(output_dir: str, file_extension: str = 'ckpt', sort_by_last_modified: bool = True) -> List[pathlib.Path]:
+    def find_files(output_dir: str, file_extension: str = 'ckpt', sort_by_last_modified: bool = True) -> List[
+        pathlib.Path]:
         """
         Finds all checkpoint (.ckpt) files in the specified directory.
 
@@ -584,9 +585,7 @@ class HumanPhenotypeModel(HumanPhenotypeTerm):
         return hpo_model
 
     @staticmethod
-    def export_results_json(model: "HumanPhenotypeModel", reference_mesh: np.ndarray, output_path: str = None,
-                            use_metric: Literal[
-                                'accuracy', 'auroc', 'f1_score', 'jaccard_index', 'matthews_corrcoef', 'precision', 'recall'] = 'matthews_corrcoef'):
+    def export_results_json(model: "HumanPhenotypeModel", reference_mesh: np.ndarray, output_path: str = None):
         """
         Exports the entire HPO model tree structure and results to a JSON file.
 
@@ -620,13 +619,7 @@ class HumanPhenotypeModel(HumanPhenotypeTerm):
 
         def recursive_node_extractor(node: "HumanPhenotypeModel"):
             if node.is_trained():
-                all_model_performances = pd.read_csv(node.val_metrics_file)
-                best_model_idx = all_model_performances[use_metric].argmax()
-                onnx_config_file = os.path.join(node.log_path, f'fold_{best_model_idx}', 'onnx_config.json')
-                with open(onnx_config_file, mode='r') as f:
-                    nodes.append(json.load(f))
-                best_ckpt_file = node.find_files(os.path.join(node.log_path, f'fold_{best_model_idx}'), file_extension='onnx.gzip')[-1]
-                shutil.copy(best_ckpt_file, os.path.join(output_dir, f'{node.id.replace(":", "_")}.onnx.gzip'))
+                nodes.append(node.export_result_dict())
                 if node.predecessor:
                     edge = {'source': node.predecessor.id, 'target': node.id}
                     if len(list(filter(lambda n: n['source'] == node.id and n['target'] == child.id, edges))) == 0:
@@ -641,3 +634,25 @@ class HumanPhenotypeModel(HumanPhenotypeTerm):
 
         json.dump(data, open(export_path, "w"), indent=2)
         logger.debug(f"HPO tree data exported to {export_path}")
+
+    @staticmethod
+    def export_onnx_files(model: "HumanPhenotypeModel", output_path: str = None, use_metric: Literal[
+        'accuracy', 'auroc', 'f1_score', 'jaccard_index', 'matthews_corrcoef', 'precision', 'recall'] = 'matthews_corrcoef'):
+        root = model.find_root()
+        output_dir = output_path if output_path else root.log_path
+        os.makedirs(output_dir, exist_ok=True)
+
+        def recursive_node_extractor(node: "HumanPhenotypeModel"):
+            if node.is_trained():
+                all_model_performances = pd.read_csv(node.val_metrics_file)
+                best_model_idx = all_model_performances[use_metric].argmax()
+                result_json = os.path.join(node.log_path, 'result.json')
+                if os.path.exists(result_json):
+                    shutil.copy(result_json, os.path.join(output_dir, 'result.json'))
+                best_ckpt_file = \
+                node.find_files(os.path.join(node.log_path, f'fold_{best_model_idx}'), file_extension='onnx.gzip')[-1]
+                shutil.copy(best_ckpt_file, os.path.join(output_dir, f'{node.id.replace(":", "_")}.onnx.gzip'))
+                for child in node.successors:
+                    recursive_node_extractor(child)
+
+        recursive_node_extractor(root)

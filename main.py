@@ -13,36 +13,19 @@ import tqdm
 from lightning import seed_everything
 from loguru import logger
 
-from src.datasets.base_dataset import BaseFaceMeshDataset
-from src.datasets.gmdb_dataset import GMDBFaceMeshDataset
-from src.datasets.gmdb_hpo_dataset import GMDBFaceMeshHPODataset
-from src.datasets.utkface_dataset import UTKFaceFaceMeshDataset
-from src.hpo_tree.hpo_model import HumanPhenotypeModel
-from src.utils.hpo_utils import build_modified_hpo_tree
-from src.utils.mediapipe_helper import extract_face_meshes
+from lib.datasets.base_dataset import BaseFaceMeshDataset
+from lib.datasets.gmdb_dataset import GMDBFaceMeshDataset
+from lib.datasets.gmdb_hpo_dataset import GMDBFaceMeshHPODataset
+from lib.datasets.utkface_dataset import UTKFaceFaceMeshDataset
+from lib.hpo_tree.hpo_model import HumanPhenotypeModel
+from lib.utils.hpo_graph import build_modified_hpo_tree
+from lib.utils.mediapipe_helper import extract_face_meshes
 
 
 def ablation_study(data_dir: str, out_dir: str, gmdb_root_dir: str, utk_root_dir: str = None,
                    face_region_selections_file: str = None, db_type: Literal[-1, 0, 1, 2, 3, 4] = -1, folds: int = 5,
                    seed: int = 42, parallel: bool = True):
-    """Run a grid-based ablation study over key training settings.
-
-    This function iterates over predefined combinations of feature dimensions,
-    face outline usage, soft-label strengths, feature-importance thresholds,
-    and metadata settings. For each configuration, it launches a full training run.
-
-    Args:
-        data_dir: Directory containing prepared input data files.
-        out_dir: Directory where model outputs and logs are written.
-        gmdb_root_dir: Root directory of the GMDB dataset.
-        utk_root_dir: Optional root directory of the UTKFace dataset.
-        face_region_selections_file: Optional JSON file containing manually defined face-region masks.
-        db_type: Database subtype used to filter or specialize GMDB-HPO training data.
-        folds: Number of cross-validation folds.
-        seed: Random seed used for reproducibility.
-        parallel: Whether to enable parallel model creation and processing.
-    """
-    dimensions = [3, 2]
+    dimensions = [2]
     use_face_outlines = [False, True]
     soft_labels = [0, 0.05, 0.1]
     feature_importance_thresholds = [0.01, 0.05, 0.1]
@@ -61,30 +44,6 @@ def train(data_dir: str, out_dir: str, gmdb_root_dir: str, utk_root_dir: str = N
           use_meta_data: List[str] = [], db_type: Literal[-1, 0, 1, 2, 3, 4] = -1, folds: int = 5,
           feature_importance_threshold: float = 0.01, dimensions: Literal[2, 3] = 3, soft_labels: float = 0.0,
           min_samples_required: int = 50, max_num_workers: int = 20, seed: int = 42, parallel: bool = True):
-    """Train hierarchical HPO classifiers for the configured dataset setup.
-
-    The function prepares the reference face mesh, loads the modified HPO tree,
-    initializes the recursive model structure, builds optional point masks, and
-    starts recursive model training across all HPO nodes.
-
-    Args:
-        data_dir: Directory containing prepared data files and shared assets.
-        out_dir: Output directory for model artifacts, logs, and distributions.
-        gmdb_root_dir: Root directory of the GMDB dataset.
-        utk_root_dir: Optional root directory of the UTKFace dataset used for negative samples.
-        face_region_selections_file: Optional JSON file with manually annotated face-region masks.
-        use_face_outline: Whether to include the outer face contour in region masks.
-        use_meta_data: List of metadata columns to include as model inputs.
-        db_type: Database subtype used to filter or specialize GMDB-HPO training data.
-        folds: Number of cross-validation folds.
-        feature_importance_threshold: Threshold used to retain important facial points.
-        dimensions: Number of face-mesh coordinate dimensions to use.
-        soft_labels: Soft-label value applied during dataset balancing.
-        min_samples_required: Minimum number of samples required for model training.
-        max_num_workers: Maximum number of workers for parallel model processing.
-        seed: Random seed used for reproducibility.
-        parallel: Whether to enable parallel model creation and processing.
-    """
     logger.info(f"Parameters: {', '.join([f'{key}={value}' for key, value in locals().items()])}")
     logger.info('CUDA is available!' if torch.cuda.is_available() else 'CUDA is not available!')
 
@@ -106,9 +65,6 @@ def train(data_dir: str, out_dir: str, gmdb_root_dir: str, utk_root_dir: str = N
     log_dir = 'logs'
     os.makedirs(log_dir, exist_ok=True)
     version = f'db={db_type}_d={dimensions}_f={use_face_outline}_m=[{"+".join(use_meta_data)}]_t={feature_importance_threshold:.2f}_l={soft_labels:.2f}_s={seed}'
-    # logger_name = os.path.join(log_dir, f"{{time}}_{version}.log")
-    # logger.remove()
-    # logger.add(logger_name, level="DEBUG", enqueue=True, backtrace=True, diagnose=True)
 
     seed_everything(seed, workers=True)
 
@@ -124,7 +80,7 @@ def train(data_dir: str, out_dir: str, gmdb_root_dir: str, utk_root_dir: str = N
     reference_face_mesh = reference_face_mesh[1].reshape((-1, 3))[:, :dimensions]
 
     # Load and prepare HPO tree
-    hpo = build_modified_hpo_tree(data_dir, download=False)
+    hpo = build_modified_hpo_tree(data_dir, download=True)
     logger.debug(f'Prepared HPO tree and reduced it to the root {hpo.id} with {len(hpo)} nodes.')
 
     root_model = HumanPhenotypeModel.create_from_hpo(hpo, out_dir, dimensions, use_meta_data, parallel,
@@ -171,9 +127,11 @@ def train(data_dir: str, out_dir: str, gmdb_root_dir: str, utk_root_dir: str = N
         db_absent = db_present
         logger.debug('Using GMDB for absent HPO features.')
 
-    with tqdm.tqdm(total=len(root_model), postfix=json.dumps({'Trained': 0, 'NoPoints': 0, 'NoSamples': 0})) as pbar:
-        recursive_model_training(pbar, root_model, db_present, db_absent, point_mask, folds, seed,
-                                 feature_importance_threshold, soft_labels, point_masks, min_samples_required)
+    # with tqdm.tqdm(total=len(root_model), postfix=json.dumps({'Trained': 0, 'NoPoints': 0, 'NoSamples': 0})) as pbar:
+    #     recursive_model_training(pbar, root_model, db_present, db_absent, point_mask, folds, seed,
+    #                              feature_importance_threshold, soft_labels, point_masks, min_samples_required)
+
+    HumanPhenotypeModel.export_results_json(root_model, reference_face_mesh, output_path=root_model.log_path)
 
 
 # @logger.catch
@@ -181,25 +139,6 @@ def recursive_model_training(pbar: tqdm.tqdm, model: HumanPhenotypeModel, db_pre
                              db_absent: BaseFaceMeshDataset, point_mask: np.ndarray, folds: int, seed: int,
                              feature_importance_threshold: float, soft_labels: float, available_point_masks,
                              min_samples_required: int):
-    """Train one HPO model node and recursively continue with its descendants.
-
-    For each node, the function validates point-mask and sample-count requirements,
-    prepares balanced positive and negative datasets, stores distribution summaries,
-    trains the current model, and then repeats the process for all child nodes.
-
-    Args:
-        pbar: Shared progress bar tracking recursive training status.
-        model: Current HPO model node to train.
-        db_present: Dataset providing samples where HPO features may be present.
-        db_absent: Dataset providing samples used as negative examples.
-        point_mask: Current facial point mask used to restrict model input features.
-        folds: Number of cross-validation folds.
-        seed: Random seed used for reproducibility.
-        feature_importance_threshold: Threshold used to retain important facial points.
-        soft_labels: Soft-label value applied during dataset balancing.
-        available_point_masks: Mapping of HPO term IDs to predefined facial point masks.
-        min_samples_required: Minimum number of samples required for model training.
-    """
     pbar.set_description_str(model.id)
     os.makedirs(model.log_path, exist_ok=True)
 
@@ -286,17 +225,46 @@ def recursive_model_training(pbar: tqdm.tqdm, model: HumanPhenotypeModel, db_pre
 
 
 def update_pbar(tag: Literal['Trained', 'NoPoints', 'NoSamples'], value: int, pbar: tqdm.tqdm):
-    """Update the progress bar counters and advance the training progress.
-
-    Args:
-        tag: Counter name to increment in the progress-bar postfix.
-        value: Amount by which the selected counter and progress bar are increased.
-        pbar: Active tqdm progress bar instance.
-    """
     postfix = json.loads(pbar.postfix)
     postfix[tag] = postfix[tag] + value
     pbar.set_postfix_str(json.dumps(postfix))
     pbar.update(value)
+
+
+def clean_up_all(out_dir: str):
+    dimensions = [3, 2]
+    use_face_outlines = [False, True]
+    soft_labels = [0, 0.05, 0.1]
+    feature_importance_thresholds = [0.01, 0.05, 0.1]
+    use_meta_data = [[], ['age', 'gender', 'ethnicity']]
+    for config in itertools.product(dimensions, use_face_outlines, soft_labels, feature_importance_thresholds,
+                                    use_meta_data):
+        dimension, use_outline, soft_label, feature_importance_threshold, meta_data = config
+        version = f'db={4}_d={dimension}_f={use_outline}_m=[{"+".join(meta_data)}]_t={feature_importance_threshold:.2f}_l={soft_label:.2f}_s={42}'
+        clean_up(out_dir, version)
+
+
+def clean_up(out_dir: str, version: str):
+    """Delete artifacts for a specific `version` across all labels for a model type.
+
+    Parameters:
+      model_type: Model family whose output subfolders should be removed (currently 'pointnet').
+      version: String Lightning logger version to remove (e.g., 4 removes `version_4`).
+
+    Side-effects:
+      - Recursively deletes directories matching `{out_dir}/{label}/version_{version}`.
+      - Logs progress via tqdm and Loguru.
+
+    Warning:
+      - This operation is destructive. Ensure you selected the correct `version` before executing.
+    """
+    labels = os.listdir(out_dir)
+    version_paths = [os.path.join(out_dir, label, version) for label in labels if
+                     os.path.exists(os.path.join(out_dir, label, version))]
+    if len(version_paths) < 50:  # MAX: 133
+        for path in tqdm.tqdm(version_paths, desc=f'Cleaning up {version}'):
+            if os.path.isdir(path):
+                shutil.rmtree(path)
 
 
 def export_onnx(data_dir: str, out_dir: str, model_dir: str, dimensions: int = 3,
@@ -309,68 +277,41 @@ def export_onnx(data_dir: str, out_dir: str, model_dir: str, dimensions: int = 3
                                         664, 336, 11231, 12745, 494, 508, 581, 286, 100539, 486, 525, 568, 601, 520,
                                         1010, 369, 154, 10805, 12471, 179, 431, 3189, 343, 289, 9890, 337, 574, 637,
                                         582, 316]):
-    """Export trained HPO model results to an ONNX-ready JSON representation.
-
-    The function optionally prunes the HPO tree to a selected subset of HPO terms,
-    rebuilds the hierarchical model structure for the requested configuration, and
-    exports the resulting model metadata and reference mesh to ``model_dir``.
-
-    Args:
-        data_dir: Directory containing prepared data files and shared assets.
-        out_dir: Root directory containing trained model outputs.
-        model_dir: Destination directory for exported ONNX-related model files.
-        dimensions: Number of face-mesh coordinate dimensions to use.
-        use_meta_data: Metadata fields expected by the exported model.
-        use_face_outline: Whether the exported configuration includes face-outline points.
-        feature_importance_threshold: Threshold used to retain important facial points.
-        soft_labels: Soft-label value used during training for the exported configuration.
-        seed: Random seed associated with the trained model version.
-        db_type: Database subtype used for the exported training configuration.
-        keep_hpos: Optional list of HPO identifiers to retain in the exported hierarchy.
-    """
+    """Export a trained model to ONNX format."""
     hpo = build_modified_hpo_tree(data_dir, download=False)
 
-    if keep_hpos:
-        keep_hpos = [f'HP:{h:07d}' for h in keep_hpos]
-        print(f'Annotated HPO-terms: {len(keep_hpos)}')
+    keep_hpos = [f'HP:{h:07d}' for h in keep_hpos]
+    print(f'Annotated HPO-terms: {len(keep_hpos)}')
 
-        # Step 2: Find all ancestors of leaves to keep
-        keep_nodes = set(keep_hpos)
-        for leaf_id in keep_hpos:
-            node = hpo.find_successor(leaf_id)
-            while node and node.predecessor:
-                keep_nodes.add(node.predecessor.id)
-                node = node.predecessor
-        print(f'Keep HPO-terms: {len(keep_nodes)}')
+    # Step 2: Find all ancestors of leaves to keep
+    keep_nodes = set(keep_hpos)
+    for leaf_id in keep_hpos:
+        node = hpo.find_successor(leaf_id)
+        while node and node.predecessor:
+            keep_nodes.add(node.predecessor.id)
+            node = node.predecessor
+    print(f'Keep HPO-terms: {len(keep_nodes)}')
 
-        def prune_subtree(node):
-            # Recurse on children first
-            node_to_remove = []
-            for child in node.successors:
-                prune_subtree(child)
-                if child.is_leaf() and child.id not in keep_nodes:  # Non-relevant leaf
-                    node_to_remove.append(child)
+    def prune_subtree(node):
+        # Recurse on children first
+        node_to_remove = []
+        for child in node.successors:
+            prune_subtree(child)
+            if child.is_leaf() and child.id not in keep_nodes:  # Non-relevant leaf
+                node_to_remove.append(child)
 
-            # Remove unnecessary children
-            for child in node_to_remove:
-                node.remove_successor(child)
+        # Remove unnecessary children
+        for child in node_to_remove:
+            node.remove_successor(child)
 
-        prune_subtree(hpo)
-
-    reference_face_file = os.path.join(data_dir, 'reference_face.jpg')
-    reference_face_mesh = extract_face_meshes([reference_face_file])
-    reference_face_mesh = reference_face_mesh[1].reshape((-1, 3))[:, :dimensions]
+    prune_subtree(hpo)
 
     version = f'db={db_type}_d={dimensions}_f={use_face_outline}_m=[{"+".join(use_meta_data)}]_t={feature_importance_threshold:.2f}_l={soft_labels:.2f}_s={seed}'
 
     hpo_model = HumanPhenotypeModel.create_from_hpo(hpo.find_root(), out_dir, dimensions, use_meta_data, False, version,
                                                     8, True)
-    HumanPhenotypeModel.export_results_json(hpo_model.find_root(), reference_face_mesh, output_path=model_dir)
+    HumanPhenotypeModel.export_onnx_files(hpo_model.find_root(), output_path=model_dir)
 
 
 if __name__ == '__main__':
-    fire.Fire({
-        'ablation': ablation_study,
-        'train': train,
-        'export_onnx': export_onnx,
-    })
+    fire.Fire()
