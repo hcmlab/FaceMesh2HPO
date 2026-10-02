@@ -429,7 +429,7 @@ export default function FaceMesh2HPO() {
         const stage = faceStageRef.current;
         const canvas = faceCanvasRef.current;
 
-        if (!landmarksRef.current.length || !imageRef.current) return;
+        if (!landmarksRef.current.length || !img || !stage) return;
 
         const availW = stage.clientWidth;
         const availH = stage.clientHeight;
