@@ -95,6 +95,8 @@ export default function FaceMesh2HPO() {
     const [minConfidence, setMinConfidence] = useState<number>(0);
 
     const faceCanvasRef = useRef<HTMLCanvasElement>(null);
+    const faceStageRef = useRef<HTMLDivElement>(null);
+    const lastNodeRef = useRef<PredictionResult | null>(null);
     const faceMeshDetectorRef = useRef<any>(null);
     const sessionsRef = useRef<Map<string, { session: any; config: HPOModel }>>(
         new Map()
@@ -421,7 +423,17 @@ export default function FaceMesh2HPO() {
     };
 
     const redrawCanvas = useCallback((node: PredictionResult | null) => {
+        lastNodeRef.current = node;
+
+        const img = imageRef.current;
+        const stage = faceStageRef.current;
+        const canvas = faceCanvasRef.current;
+
         if (!landmarksRef.current.length || !imageRef.current) return;
+
+        const availW = stage.clientWidth;
+        const availH = stage.clientHeight;
+        if (availW <= 0 || availH <= 0) return;
 
         const landmarks = landmarksRef.current;
         let shapValues: number[] | undefined;
@@ -431,8 +443,21 @@ export default function FaceMesh2HPO() {
             shapValues = (node as any).shapValues;
         }
 
-        const canvas = faceCanvasRef.current;
         if (!canvas || !imageRef.current) return;
+
+        // Fit image into the available area (keeps aspect ratio)
+        const imgW = (img as HTMLImageElement).naturalWidth || img.width;
+        const imgH = (img as HTMLImageElement).naturalHeight || img.height;
+        const fit = Math.min(availW / imgW, availH / imgH);
+        const cssW = Math.max(1, Math.floor(imgW * fit));
+        const cssH = Math.max(1, Math.floor(imgH * fit));
+
+        // Render at device-pixel resolution (sharp on retina, cheap for huge photos)
+        const dpr = Math.min(window.devicePixelRatio || 1, 2);
+        canvas.style.width = `${cssW}px`;
+        canvas.style.height = `${cssH}px`;
+        canvas.width = Math.round(cssW * dpr);
+        canvas.height = Math.round(cssH * dpr);
 
         const ctx = canvas.getContext("2d");
         if (!ctx) return;
@@ -445,7 +470,7 @@ export default function FaceMesh2HPO() {
         // Scale point radius with canvas size:
         // - 0.25% of the smaller canvas dimension
         // - clamped so points do not become too tiny or too large
-        const radius = Math.max(1, minCanvasSize * 0.0025);
+        const radius = Math.min(4, Math.max(1.5, cssW * 0.004)) * dpr;
 
         if (window.drawLandmarks && landmarks && landmarks.length > 0) {
             const pointMask = getPointMaskFromImportance(model?.importanceValues);
@@ -489,6 +514,27 @@ export default function FaceMesh2HPO() {
             }
         }
     }, []);
+
+    useEffect(() => {
+        const stage = faceStageRef.current;
+        if (!stage) return;
+
+        let frame = 0;
+        const onResize = () => {
+            cancelAnimationFrame(frame);
+            frame = requestAnimationFrame(() => redrawCanvas(lastNodeRef.current));
+        };
+
+        const ro = new ResizeObserver(onResize);
+        ro.observe(stage);
+        window.addEventListener("orientationchange", onResize);
+
+        return () => {
+            cancelAnimationFrame(frame);
+            ro.disconnect();
+            window.removeEventListener("orientationchange", onResize);
+        };
+    }, [redrawCanvas]);
 
     useEffect(() => {
         if (results.length > 0) {
@@ -814,45 +860,64 @@ export default function FaceMesh2HPO() {
             <style jsx global>{`
                 .main-content {
                     min-height: 100vh;
-                    height: 100vh;
-                    max-height: 100vh;
-                    padding: 2rem 0;
+                    min-height: 100dvh;
+                    height: 100dvh;
+                    padding: 1rem 0;
                     position: relative;
                     z-index: 1;
                 }
 
                 .face-display {
                     position: relative;
-                    //background: rgba(255, 255, 255, 0.95);
-                    //backdrop-filter: blur(10px);
-                    //border-radius: 20px;
                     overflow: hidden;
-                    //box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
+                    display: flex;
+                    justify-content: center;
+                    align-items: center;
+                    min-height: 0;
+                }
+
+                .face-stage {
+                    flex: 1 1 auto;
+                    width: 100%;
+                    height: 100%;
+                    min-width: 0;
+                    min-height: 0;
                     display: flex;
                     justify-content: center;
                     align-items: center;
                 }
 
                 .face-canvas {
-                    width: auto;
-                    height: 87vh;
                     display: block;
+                    flex: 0 0 auto;
                     border: 1px solid rgba(0, 0, 0, 0.3);
                 }
 
                 .hpo-panel {
                     background: rgba(255, 255, 255, 0.95);
-                    //backdrop-filter: blur(10px);
-                    //border-radius: 20px;
                     height: 80vh;
                     overflow-y: auto;
-                    //box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
                 }
 
-                @media (max-width: 1024px) {
+                /* Below Bootstrap's lg breakpoint the columns stack */
+                @media (max-width: 991.98px) {
+                    .main-content {
+                        height: auto;
+                        min-height: 100dvh;
+                    }
+                    .face-display {
+                        height: 65dvh !important;
+                        min-height: 280px;
+                    }
                     .hpo-panel {
-                        overflow-y: hidden;
-                        height: 100%;
+                        height: auto;
+                        overflow-y: visible;
+                    }
+                    .reset-btn {
+                        bottom: 1rem;
+                        right: 1rem;
+                        width: 52px;
+                        height: 52px;
                     }
                 }
 
@@ -1029,7 +1094,9 @@ export default function FaceMesh2HPO() {
                                 )}
                             </div>
 
-                            <canvas ref={faceCanvasRef} className="face-canvas"/>
+                            <div ref={faceStageRef} className="face-stage">
+                                <canvas ref={faceCanvasRef} className="face-canvas"/>
+                            </div>
 
                             <div className="position-absolute bottom-0 start-0 m-3 d-flex gap-2">
                                 <button
