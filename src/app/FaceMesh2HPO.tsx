@@ -594,6 +594,7 @@ export default function FaceMesh2HPO() {
                 | number[]
                 | undefined;
 
+            // @ts-ignore
             const fallbackImportance = pointIndices.map(
                 (index) => model.importanceValues?.[String(index)] ?? 0,
             );
