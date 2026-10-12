@@ -594,10 +594,12 @@ export default function FaceMesh2HPO() {
                 | number[]
                 | undefined;
 
-            // @ts-ignore
-            const fallbackImportance = pointIndices.map(
-                (index) => model.importanceValues?.[String(index)] ?? 0,
-            );
+                const fallbackImportance = pointMask.map(
+                    (idx) => {
+                        // @ts-ignore
+                        return model.importanceValues?.[String(idx)] ?? 0;
+                    }
+                );
 
             const values =
                 shapValues && shapValues.length === pointsToDraw.length
