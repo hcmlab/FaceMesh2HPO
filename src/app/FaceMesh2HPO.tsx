@@ -68,6 +68,94 @@ function prepareDatabase(database: any) {
     return {gender, ethnicity, ageGroups, databaseSource};
 }
 
+type FaceLandmark = {
+    x: number;
+    y: number;
+    z?: number;
+};
+
+type FaceCrop = {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+};
+
+const FACE_CROP_MARGIN = {
+    left: 0.30,
+    right: 0.30,
+    top: 0.60,
+    bottom: 0.20,
+};
+
+function getFaceCrop(
+    landmarks: readonly FaceLandmark[],
+    imageWidth: number,
+    imageHeight: number,
+): FaceCrop {
+    const fullImage: FaceCrop = {
+        x: 0,
+        y: 0,
+        width: imageWidth,
+        height: imageHeight,
+    };
+
+    const validPoints = landmarks.filter(
+        (point) => Number.isFinite(point.x) && Number.isFinite(point.y),
+    );
+
+    if (!validPoints.length) return fullImage;
+
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+
+    for (const point of validPoints) {
+        const x = point.x * imageWidth;
+        const y = point.y * imageHeight;
+
+        minX = Math.min(minX, x);
+        minY = Math.min(minY, y);
+        maxX = Math.max(maxX, x);
+        maxY = Math.max(maxY, y);
+    }
+
+    const faceWidth = maxX - minX;
+    const faceHeight = maxY - minY;
+
+    if (faceWidth <= 0 || faceHeight <= 0) return fullImage;
+
+    const clamp = (value: number, max: number) =>
+        Math.max(0, Math.min(max, value));
+
+    const left = clamp(
+        Math.floor(minX - faceWidth * FACE_CROP_MARGIN.left),
+        imageWidth,
+    );
+    const top = clamp(
+        Math.floor(minY - faceHeight * FACE_CROP_MARGIN.top),
+        imageHeight,
+    );
+    const right = clamp(
+        Math.ceil(maxX + faceWidth * FACE_CROP_MARGIN.right),
+        imageWidth,
+    );
+    const bottom = clamp(
+        Math.ceil(maxY + faceHeight * FACE_CROP_MARGIN.bottom),
+        imageHeight,
+    );
+
+    if (right <= left || bottom <= top) return fullImage;
+
+    return {
+        x: left,
+        y: top,
+        width: right - left,
+        height: bottom - top,
+    };
+}
+
 export default function FaceMesh2HPO() {
     const [statusText, setStatusText] = useState("");
     const [modelStatus, setModelStatus] = useState("Initializing...");
@@ -428,90 +516,122 @@ export default function FaceMesh2HPO() {
         const img = imageRef.current;
         const stage = faceStageRef.current;
         const canvas = faceCanvasRef.current;
+        const landmarks = landmarksRef.current;
 
-        if (!landmarksRef.current.length || !img || !stage) return;
+        if (!img || !stage || !canvas || !landmarks.length) return;
 
         const availW = stage.clientWidth;
         const availH = stage.clientHeight;
-        if (availW <= 0 || availH <= 0) return;
+        const imgW = img.naturalWidth || img.width;
+        const imgH = img.naturalHeight || img.height;
 
-        const landmarks = landmarksRef.current;
-        let shapValues: number[] | undefined;
-        const model = hpoModelsRef.current.find((m) => m.id === node?.id);
+        if (availW <= 0 || availH <= 0 || imgW <= 0 || imgH <= 0) return;
 
-        if ((node as any)?.shapValues) {
-            shapValues = (node as any).shapValues;
-        }
+        const crop = getFaceCrop(landmarks, imgW, imgH);
 
-        if (!canvas || !imageRef.current) return;
+        // Fit the crop, not the original image, into the available stage.
+        const fit = Math.min(
+            availW / crop.width,
+            availH / crop.height,
+        );
 
-        // Fit image into the available area (keeps aspect ratio)
-        const imgW = (img as HTMLImageElement).naturalWidth || img.width;
-        const imgH = (img as HTMLImageElement).naturalHeight || img.height;
-        const fit = Math.min(availW / imgW, availH / imgH);
-        const cssW = Math.max(1, Math.floor(imgW * fit));
-        const cssH = Math.max(1, Math.floor(imgH * fit));
-
-        // Render at device-pixel resolution (sharp on retina, cheap for huge photos)
+        const cssW = Math.max(1, Math.floor(crop.width * fit));
+        const cssH = Math.max(1, Math.floor(crop.height * fit));
         const dpr = Math.min(window.devicePixelRatio || 1, 2);
+
         canvas.style.width = `${cssW}px`;
         canvas.style.height = `${cssH}px`;
-        canvas.width = Math.round(cssW * dpr);
-        canvas.height = Math.round(cssH * dpr);
+        canvas.width = Math.max(1, Math.round(cssW * dpr));
+        canvas.height = Math.max(1, Math.round(cssH * dpr));
 
         const ctx = canvas.getContext("2d");
         if (!ctx) return;
 
         ctx.clearRect(0, 0, canvas.width, canvas.height);
-        canvas.width = imageRef.current.width;
-        canvas.height = imageRef.current.height;
-        ctx.drawImage(imageRef.current, 0, 0);
-        const minCanvasSize = Math.min(canvas.width, canvas.height);
-        // Scale point radius with canvas size:
-        // - 0.25% of the smaller canvas dimension
-        // - clamped so points do not become too tiny or too large
-        const radius = Math.min(4, Math.max(1.5, cssW * 0.004)) * dpr;
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = "high";
 
-        if (window.drawLandmarks && landmarks && landmarks.length > 0) {
-            const pointMask = getPointMaskFromImportance(model?.importanceValues);
-            const pointsToDraw =
-                pointMask.length > 0
-                    ? pointMask.map((idx) => landmarks[idx]).filter(Boolean)
-                    : landmarks;
+        ctx.drawImage(
+            img,
+            crop.x,
+            crop.y,
+            crop.width,
+            crop.height,
+            0,
+            0,
+            canvas.width,
+            canvas.height,
+        );
 
-            if (model) {
-                const fallbackImportance = pointMask.map(
-                    (idx) => {
-                        // @ts-ignore
-                        return model.importanceValues?.[String(idx)] ?? 0;
-                    }
+        // Original normalized coordinates -> crop-normalized coordinates.
+        // These copies are only used for drawing, not for model inference.
+        const displayLandmarks = landmarks.map((point) => ({
+            ...point,
+            x: (point.x * imgW - crop.x) / crop.width,
+            y: (point.y * imgH - crop.y) / crop.height,
+        }));
+
+        const model = hpoModelsRef.current.find(
+            (candidate) => candidate.id === node?.id,
+        );
+
+        const pointMask = getPointMaskFromImportance(model?.importanceValues);
+        const pointIndices = (
+            pointMask.length > 0
+                ? pointMask
+                : displayLandmarks.map((_, index) => index)
+        ).filter((index) => Boolean(displayLandmarks[index]));
+
+        const pointsToDraw = pointIndices.map(
+            (index) => displayLandmarks[index],
+        );
+
+        const radius =
+            Math.min(4, Math.max(1.5, cssW * 0.004)) * dpr;
+
+        if (model) {
+            const shapValues = (node as any)?.shapValues as
+                | number[]
+                | undefined;
+
+            const fallbackImportance = pointIndices.map(
+                (index) => model.importanceValues?.[String(index)] ?? 0,
+            );
+
+            const values =
+                shapValues && shapValues.length === pointsToDraw.length
+                    ? shapValues
+                    : fallbackImportance;
+
+            const maxImportance = Math.max(
+                ...values.map((value) => Math.abs(value)),
+                1e-12,
+            );
+
+            pointsToDraw.forEach((point, index) => {
+                const normalizedImportance =
+                    Math.abs(values[index] ?? 0) / maxImportance;
+
+                ctx.beginPath();
+                ctx.arc(
+                    point.x * canvas.width,
+                    point.y * canvas.height,
+                    radius,
+                    0,
+                    2 * Math.PI,
                 );
-
-                const values =
-                    shapValues && shapValues.length === pointsToDraw.length
-                        ? shapValues
-                        : fallbackImportance;
-
-                const absValues = values.map(Math.abs);
-                const maxImportance = Math.max(...absValues, 1e-12);
-
-                pointsToDraw.forEach((pt: any, i: number) => {
-                    const valueImportance = values[i] ?? 0;
-                    const normalizedImportance = Math.abs(valueImportance) / maxImportance;
-                    const color = interpolateColor(normalizedImportance, colorScaleLegend);
-
-                    ctx.beginPath();
-                    ctx.arc(pt.x * canvas.width, pt.y * canvas.height, radius, 0, 2 * Math.PI);
-                    ctx.fillStyle = color;
-                    ctx.fill();
-                });
-            } else {
-                window.drawLandmarks(ctx, pointsToDraw, {
-                    color: "rgb(194 235 255)",
-                    lineWidth: 0.5,
-                    radius: radius,
-                });
-            }
+                ctx.fillStyle = interpolateColor(
+                    normalizedImportance,
+                    colorScaleLegend,
+                );
+                ctx.fill();
+            });
+        } else if (window.drawLandmarks) {
+            window.drawLandmarks(ctx, pointsToDraw, {
+                color: "rgb(194 235 255)",
+                lineWidth: 0.5 * dpr,
+                radius,
+            });
         }
     }, []);
 
